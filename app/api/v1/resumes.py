@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Response
 from uuid import uuid4
+import json
 from typing import List
 from app.models.resume_job import ResumeJob
 from app.storage.blob_stub import BlobStorageService
@@ -84,6 +85,25 @@ async def get_status(resume_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Resume not found")
     return job
+
+@router.get("/{resume_id}/parsed")
+async def get_parsed_resume(resume_id: str):
+    job = get_resume_job(resume_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    if job.status != "COMPLETED":
+        raise HTTPException(status_code=400, detail="Resume not processed yet")
+
+    parsed_blob_path = f"processed/{resume_id}/{job.filename.rsplit('.', 1)[0]}.json"
+
+    try:
+        parsed_bytes = blob_service.download_file(parsed_blob_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Parsed data not found")
+
+    return json.loads(parsed_bytes)   
 
 
 @router.get("/{resume_id}/download")

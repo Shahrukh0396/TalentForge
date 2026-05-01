@@ -14,8 +14,8 @@ app = FastAPI(
 )
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
+    CORSMiddleware,   
+    allow_origin_regex=r"https://.*\.powerapps\.com|https://.*\.gateway\.prod\.island\.powerapps\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

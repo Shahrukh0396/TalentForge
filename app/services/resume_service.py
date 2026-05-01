@@ -116,10 +116,7 @@ def process_resume_task(resume_id: str):
         job.status = "COMPLETED"
         job.completed_at = datetime.utcnow()
         job.generated_blob_path = generated_blob_path
-        if blob_service.container is None:
-            job.download_url = f"/api/v1/resumes/{resume_id}/download"
-        else:
-            job.download_url = blob_service.generate_read_url(generated_blob_path)
+        job.download_url = f"/api/v1/resumes/{resume_id}/download"
     
     except ValueError as e:  # File not found or could not be downloaded
         job.status = "FAILED"
