@@ -79,43 +79,54 @@ async def process_batch_resumes(
             ) from exc
     return jobs
 
-@router.get("/{resume_id}", response_model=ResumeJob)
+@router.get("/{resume_id}")
 async def get_status(resume_id: str):
     job = get_resume_job(resume_id)
     if not job:
         raise HTTPException(status_code=404, detail="Resume not found")
-    return job
+    return ResumeJob.model_validate(job.model_dump()).model_dump()
+
 
 @router.get("/{resume_id}/parsed")
 async def get_parsed_resume(resume_id: str):
     job = get_resume_job(resume_id)
 
     if not job:
-        raise HTTPException(status_code=404, detail="Resume not found")
+        raise HTTPException(status_code=404, detail="Resume job not found")
 
     if job.status != "COMPLETED":
-        raise HTTPException(status_code=400, detail="Resume not processed yet")
+        raise HTTPException(
+            status_code=400,
+            detail="Resume not processed yet"
+        )
 
-    parsed_blob_path = f"processed/{resume_id}/{job.filename.rsplit('.', 1)[0]}.json"
+    if not job.parsed_json_blob_path:
+        raise HTTPException(
+            status_code=404,
+            detail="Parsed data not found"
+        )
 
-    try:
-        parsed_bytes = blob_service.download_file(parsed_blob_path)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Parsed data not found")
+    parsed_bytes = blob_service.download_file(job.parsed_json_blob_path)
 
-    return json.loads(parsed_bytes)   
+    if not parsed_bytes:
+        raise HTTPException(
+            status_code=404,
+            detail="Parsed data not found"
+        )
+
+    return json.loads(parsed_bytes)
+
 
 
 @router.get("/{resume_id}/download")
 async def download_result(resume_id: str):
     job = get_resume_job(resume_id)
-    print("DOWNLOAD BLOB PATH:", job.raw_blob_path)
     if not job:
         raise HTTPException(status_code=404, detail="Resume not found")
-    if job.status != "COMPLETED" or not job.generated_blob_path:
+    if job.status != "COMPLETED" or not job.generated_docx_blob_path:
         raise HTTPException(status_code=400, detail="Resume is not ready for download")
 
-    output_bytes = blob_service.download_file(job.generated_blob_path)
+    output_bytes = blob_service.download_file(job.generated_docx_blob_path)
     if not output_bytes:
         raise HTTPException(status_code=404, detail="Generated file not found")
 

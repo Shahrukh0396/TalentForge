@@ -233,61 +233,70 @@ def _fallback_name_from_filename(candidate_filename: str) -> str:
     return cleaned.upper() if cleaned else base.upper()
 
 
+
 def build_formatted_resume_docx(
-    parsed_text: str,
-    candidate_filename: str,
-    guideline_path: str | None = None,
+    structured_resume: dict,
     letterhead_path: str | None = None,
 ) -> bytes:
+    # 1. Create document from letterhead
     doc = _document_from_letterhead(letterhead_path)
     _apply_document_theme(doc)
-    _ = guideline_path
 
-    raw_lines = [line.strip() for line in parsed_text.split("\n")]
-    lines = [_normalize_software_names(line) for line in raw_lines if line and not _strip_contact_line(line)]
-    candidate_name, sections = _extract_sections(lines)
-    sections = _rebalance_sections(sections)
-
+    # 2. Candidate name (from JSON, no guessing)
     title = doc.add_paragraph()
-    name_run = title.add_run(candidate_name or _fallback_name_from_filename(candidate_filename))
+    name_run = title.add_run(structured_resume.get("name", ""))
     name_run.bold = True
     name_run.font.name = "Cambria"
     name_run.font.size = Pt(14)
     title.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    title.paragraph_format.space_before = Pt(0)
     title.paragraph_format.space_after = Pt(10)
 
-    for section in SECTION_ORDER:
-        _add_section_header(doc, section)
-        section_lines = [line for line in sections.get(section, []) if line]
-        if not section_lines:
-            continue
+    # 3. Optional title
+    if structured_resume.get("title"):
+        subtitle = doc.add_paragraph(structured_resume["title"])
+        subtitle.paragraph_format.space_after = Pt(8)
 
-        if section == "PROFESSIONAL EXPERIENCE":
-            for line in section_lines:
-                if line.startswith("-"):
-                    bullet = doc.add_paragraph(line.lstrip("- ").strip(), style="List Bullet")
-                    bullet.paragraph_format.space_after = Pt(2)
-                    continue
+    # 4. Summary
+    _add_section_header(doc, "SUMMARY OF QUALIFICATIONS")
+    doc.add_paragraph(structured_resume.get("summary", ""))
 
-                if " - " in line and DATE_PATTERN.search(line):
-                    left_text, right_text = line.rsplit(" - ", 1)
-                    _add_left_right_line(doc, left_text.strip(), right_text.strip())
-                    continue
+    # 5. Professional Experience
+    _add_section_header(doc, "PROFESSIONAL EXPERIENCE")
 
-                if DATE_PATTERN.search(line):
-                    _add_left_right_line(doc, line, "")
-                    continue
+    for job in structured_resume.get("professional_experience", []):
+        _add_left_right_line(
+            doc,
+            f"{job['company']} – {job.get('location', '')}",
+            job.get("dates", "")
+        )
 
-                doc.add_paragraph(line)
-        else:
-            for line in section_lines:
-                if line.startswith("-"):
-                    doc.add_paragraph(line.lstrip("- ").strip(), style="List Bullet")
-                else:
-                    paragraph = doc.add_paragraph(line)
-                    paragraph.paragraph_format.space_after = Pt(3)
+        role_para = doc.add_paragraph(job.get("role", ""))
+        role_para.paragraph_format.space_after = Pt(2)
 
+        for bullet in job.get("bullets", []):
+            b = doc.add_paragraph(bullet, style="List Bullet")
+            b.paragraph_format.space_after = Pt(2)
+
+    # 6. Education
+    if structured_resume.get("education"):
+        _add_section_header(doc, "EDUCATION")
+        for edu in structured_resume["education"]:
+            doc.add_paragraph(
+                f"{edu.get('institution', '')} – {edu.get('degree', '')}"
+            )
+
+    # 7. Technical Skills
+    if structured_resume.get("technical_skills"):
+        _add_section_header(doc, "TECHNICAL SKILLS")
+        doc.add_paragraph(", ".join(structured_resume["technical_skills"]))
+
+    # 8. Certifications
+    if structured_resume.get("certifications"):
+        _add_section_header(doc, "CERTIFICATIONS")
+        for cert in structured_resume["certifications"]:
+            doc.add_paragraph(cert)
+
+    # 9. Save
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
