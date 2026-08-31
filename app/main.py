@@ -3,14 +3,15 @@ from fastapi import Response
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
+from app.core.config import settings
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 
 load_dotenv()
 
 app = FastAPI(
-    title="TalentForge Resume Processing API",
-    version="1.0.0",
+    title=settings.app_name,
+    version=settings.app_version,
     description="Upload, process, and download formatted resumes.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -52,11 +53,17 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/", tags=["docs"])
 async def root():
     return {
-        "service": "TalentForge Resume Processing API",
+        "service": settings.app_name,
+        "version": settings.app_version,
+        "api": settings.api_version,
         "docs": "/docs",
     }
 
 
 @app.get("/health", tags=["health"])
 async def health_check():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "version": settings.app_version,
+        "api": settings.api_version,
+    }

@@ -272,27 +272,131 @@ curl -o output.docx "http://127.0.0.1:8000/api/v1/resumes/RESUME_ID/docx"
 
 ---
 
-## 9. Run with Docker
+## 9. Run with Docker (local)
 
 ```bash
 docker build -t talentforge-api .
+docker run --env-file .env -p 8000:8000 talentforge-api
+```
 
+---
+
+## 10. Deployment pipeline (GitHub Actions → Azure)
+
+This repo includes automated CI/CD:
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `.github/workflows/ci.yml` | PR + push to `main`/`stable` | Install deps, compile Python, build Docker image |
+| `.github/workflows/azure-deploy.yml` | Push to `stable` + manual | Build image, push to ACR, deploy Azure Web App |
+
+### One-time Azure setup
+
+#### 1) Create Azure Container Registry (ACR)
+
+```bash
+az login
+az group create --name rg-talentforge --location eastus
+az acr create --resource-group rg-talentforge --name talentforgeacr --sku Basic
+az acr show --name talentforgeacr --query loginServer -o tsv
+```
+
+#### 2) Create Azure Web App for Containers
+
+```bash
+ACR_LOGIN_SERVER=$(az acr show --name talentforgeacr --query loginServer -o tsv)
+APP_NAME=talentforge-api-$RANDOM
+
+az appservice plan create \
+  --name plan-talentforge \
+  --resource-group rg-talentforge \
+  --sku B1 \
+  --is-linux
+
+az webapp create \
+  --resource-group rg-talentforge \
+  --plan plan-talentforge \
+  --name "$APP_NAME" \
+  --deployment-container-image-name "$ACR_LOGIN_SERVER/talentforge-api:latest"
+
+az webapp config appsettings set \
+  --resource-group rg-talentforge \
+  --name "$APP_NAME" \
+  --settings WEBSITES_PORT=8000
+```
+
+#### 3) Enable ACR pull for Web App
+
+```bash
+ACR_ID=$(az acr show --name talentforgeacr --query id -o tsv)
+az webapp identity assign --resource-group rg-talentforge --name "$APP_NAME"
+PRINCIPAL_ID=$(az webapp identity show --resource-group rg-talentforge --name "$APP_NAME" --query principalId -o tsv)
+az role assignment create --assignee "$PRINCIPAL_ID" --scope "$ACR_ID" --role AcrPull
+```
+
+#### 4) Add app settings in Azure Portal
+
+In **Web App → Configuration → Application settings**, add:
+
+- `AZURE_BLOB_CONNECTION_STRING`
+- `AZURE_BLOB_CONTAINER`
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_VERSION`
+- `AZURE_OPENAI_DEPLOYMENT`
+- `WEBSITES_PORT=8000`
+
+#### 5) Create GitHub secrets
+
+In GitHub repo **Settings → Secrets and variables → Actions**, add:
+
+| Secret | Value |
+|---|---|
+| `AZURE_CREDENTIALS` | Service principal JSON (see below) |
+| `ACR_LOGIN_SERVER` | e.g. `talentforgeacr.azurecr.io` |
+| `ACR_USERNAME` | ACR admin username (or SP) |
+| `ACR_PASSWORD` | ACR admin password (or SP secret) |
+| `AZURE_WEBAPP_NAME` | Your web app name |
+
+Create service principal:
+
+```bash
+az ad sp create-for-rbac \
+  --name "talentforge-github-deploy" \
+  --role contributor \
+  --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-talentforge \
+  --sdk-auth
+```
+
+Copy the full JSON output into `AZURE_CREDENTIALS`.
+
+#### 6) Create GitHub environment (recommended)
+
+Create environment: `production`  
+(Optional) Add required reviewers for safer deploys.
+
+### Deploy flow
+
+1. Merge/push to `stable`
+2. GitHub Actions runs `azure-deploy.yml`
+3. Docker image is built and pushed to ACR
+4. Azure Web App is updated to the new image tag (`github.sha`)
+5. Verify:
+   - `https://<your-app>.azurewebsites.net/health`
+   - `https://<your-app>.azurewebsites.net/docs`
+
+### Manual deploy trigger
+
+GitHub → **Actions** → **Deploy to Azure** → **Run workflow**
+
+### Local Docker deploy test (before pipeline)
+
+```bash
+docker build -t talentforge-api .
 docker run --env-file .env -p 8000:8000 talentforge-api
 ```
 
 The Docker image includes LibreOffice, so PDF generation works out of the box.
-
----
-
-## 10. Deploy to Azure App Service (overview)
-
-1. Push code to GitHub or Azure DevOps.
-2. Create an **App Service** (Linux, Python 3.12 or Docker).
-3. In **Configuration → Application settings**, add all `.env` variables.
-4. Enable **SCM_DO_BUILD_DURING_DEPLOYMENT** (see `.deployment` file).
-5. Deploy and verify `/health` and `/docs`.
-
-For Docker-based App Service, use the included `Dockerfile` so LibreOffice is available for PDF export.
 
 ---
 
