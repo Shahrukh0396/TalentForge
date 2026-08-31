@@ -23,6 +23,9 @@ CRITICAL RULES:
   - personal websites
 - DO NOT remove the candidate's name.
 
+Glossary:
+    - Name: person name can constitues a distinctive designation
+
 
 FORMATTING RULES:
 - Fix grammar and spelling.
@@ -68,11 +71,14 @@ uses different wording, still extract it into the correct semantic section.
 Do NOT invent sections.
 Do NOT drop content.
 
+But if there are additional sections verify them and then add them.
+
 OUTPUT SCHEMA (MUST MATCH EXACTLY):
 {
   "name": "",
   "title": "",
   "summary": "",
+  "core_competencies": [],
   "professional_experience": [
     {
       "company": "",
@@ -86,6 +92,8 @@ OUTPUT SCHEMA (MUST MATCH EXACTLY):
   "technical_skills": [],
   "certifications": []
 }
+
+DO not remove professional experience locations.
 """
 
 
@@ -126,6 +134,7 @@ def format_resume_with_openai(clean_text: str) -> dict:
         "name",
         "title",
         "summary",
+        "core_competencies",
         "professional_experience",
         "education",
         "technical_skills",
