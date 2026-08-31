@@ -39,3 +39,7 @@ class BlobStorageService:
     def download_file(self, blob_path: str) -> bytes:
         blob_client = self.container.get_blob_client(blob_path)
         return blob_client.download_blob().readall()
+
+    def blob_exists(self, blob_path: str) -> bool:
+        blob_client = self.container.get_blob_client(blob_path)
+        return blob_client.exists()
