@@ -25,3 +25,7 @@ class ResumeJob(BaseModel):
 
     class Config:
         extra = "forbid"
+
+
+class ResumeHistoryItem(ResumeJob):
+    role: str
