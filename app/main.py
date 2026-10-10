@@ -1,56 +1,39 @@
-from urllib.request import Request
-from fastapi import Response
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.router import api_router
-from app.core.config import settings
 from dotenv import load_dotenv
-from starlette.middleware.base import BaseHTTPMiddleware
 
 load_dotenv()
+
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import JSONResponse
+
+from app.api.v1.router import api_router
+from app.auth import current_user
+from app.core.config import settings
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description="Upload, process, and download formatted resumes.",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.openapi_version = "3.0.3"
 
-
-
-class DynamicCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin", "*")
-        print(origin)
-        # Handle preflight OPTIONS request
-        if request.method == "OPTIONS":
-            return Response(
-                status_code=200,
-                headers={
-                    "Access-Control-Allow-Origin": origin,
-                    "Access-Control-Allow-Credentials": "true",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Authorization, Content-Type, Ocp-Apim-Subscription-Key, Accept",
-                    "Access-Control-Max-Age": "300",
-                },
-            )
-        
-        # Handle actual request
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
-
-app.add_middleware(DynamicCORSMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_origin] if settings.frontend_origin else [],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+)
 
 app.include_router(api_router, prefix="/api/v1")
 
 
-@app.get("/", tags=["docs"])
+@app.get("/", tags=["docs"], dependencies=[Depends(current_user)])
 async def root():
     return {
         "service": settings.app_name,
@@ -58,6 +41,21 @@ async def root():
         "api": settings.api_version,
         "docs": "/docs",
     }
+
+
+@app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(current_user)])
+async def openapi():
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False, dependencies=[Depends(current_user)])
+async def swagger_ui():
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{settings.app_name} docs")
+
+
+@app.get("/redoc", include_in_schema=False, dependencies=[Depends(current_user)])
+async def redoc_ui():
+    return get_redoc_html(openapi_url="/openapi.json", title=f"{settings.app_name} docs")
 
 
 @app.get("/health", tags=["health"])

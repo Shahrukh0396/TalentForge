@@ -268,7 +268,8 @@ curl -o output.docx "http://127.0.0.1:8000/api/v1/resumes/RESUME_ID/docx"
 | `GET` | `/api/v1/resumes/{id}/parsed` | Structured JSON output |
 | `GET` | `/api/v1/resumes/{id}/docx` | Download stored DOCX |
 | `GET` | `/api/v1/resumes/{id}/pdf` | Download stored PDF |
-| `GET` | `/health` | Health check |
+| `GET` | `/api/v1/me` | Signed-in user (`tid`, `oid`, name, roles) |
+| `GET` | `/health` | Health check (public). Every other route requires an Entra access token |
 
 ---
 
@@ -410,7 +411,7 @@ The Docker image includes LibreOffice, so PDF generation works out of the box.
 | Postman shows `PK...` garbage on download | Binary DOCX shown as text | Use **Send and Download**, save as `.docx` |
 | PDF processing fails locally | LibreOffice not installed | Install LibreOffice (`soffice` on PATH) |
 | `status: FAILED` with LibreOffice error | Same as above | Install LibreOffice or use Docker |
-| CORS errors from Power Apps | Origin blocked | API includes dynamic CORS middleware; verify App Service URL |
+| CORS errors from the website | Origin blocked | Set `FRONTEND_ORIGIN` to the exact site origin, including scheme and port |
 
 ---
 
@@ -433,6 +434,56 @@ Download via API
 ```
 
 ---
+
+## Microsoft Entra ID
+
+Single-tenant sign-in. The website uses MSAL. This API accepts only a bearer access token for `api://<API_CLIENT_ID>/access_as_user`. A typed email or object ID is not accepted. `GET /health` is the only public route.
+
+### App registrations
+
+1. **API app.** Register an app in the TalentForge tenant. Expose a scope named `access_as_user` (full value `api://<API client id>/access_as_user`). In the manifest set `"accessTokenAcceptedVersion": 2`.
+2. **SPA app.** Register a single-page application. Redirect URIs: `http://localhost:5173` and the deployed site origin. Under **API permissions**, add the API app's `access_as_user` delegated permission.
+3. On the API app, add the SPA's client id under **Expose an API → Authorized client applications**.
+4. Grant **admin consent** for `access_as_user`.
+5. On the API enterprise application, set **Assignment required** to Yes and assign the users or groups who may sign in. Unassigned users are blocked by Entra before this API sees a token.
+
+### Environment
+
+Backend:
+
+```env
+ENTRA_TENANT_ID=
+API_CLIENT_ID=
+DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/talentforge
+FRONTEND_ORIGIN=http://localhost:5173
+```
+
+Frontend (`TalentForge-FE/.env`), keeping the existing API base:
+
+```env
+VITE_API_BASE=https://<api-host>/api/v1
+VITE_TENANT_ID=
+VITE_SPA_CLIENT_ID=
+VITE_API_CLIENT_ID=
+```
+
+`VITE_SPA_CLIENT_ID` is the SPA app. `VITE_API_CLIENT_ID` and `API_CLIENT_ID` are the API app. Tokens stay in `sessionStorage`, not `localStorage`.
+
+Create the users table (keyed on tenant id + object id, not email):
+
+```bash
+alembic upgrade head
+```
+
+### Manual test checklist
+
+- [ ] Assigned user signs in with Microsoft and the product loads.
+- [ ] `GET /api/v1/me` with that access token returns `tid`, `oid`, `name`, `preferred_username`, and `roles`.
+- [ ] Missing, expired, or tampered token returns **401**.
+- [ ] A user who is not assigned on the enterprise app cannot complete sign-in.
+- [ ] A token whose audience is not the API app id (and not `api://<API app id>`) returns **401**.
+- [ ] A token for another tenant, or without the `access_as_user` scope, returns **403**.
+- [ ] `GET /health` succeeds with no token. `GET /api/v1/resumes/{id}` without a token returns **401**.
 
 ## License
 
