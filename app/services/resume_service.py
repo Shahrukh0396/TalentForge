@@ -18,6 +18,7 @@ from app.storage.blob_stub import BlobStorageService
 from app.storage.job_store import load_job, save_job
 from app.parsing.parser import parse_resume
 from app.services.openai_service import format_resume_with_openai
+from app.services.content_standardizer import standardize_resume
 from app.services.docx_renderer import render_resume_docx
 from app.utils.helpers import resolve_candidate_name
 
@@ -106,6 +107,7 @@ def process_resume_task(resume_id: str):
             clean_text,
             job.filename,
         )
+        structured_resume = standardize_resume(structured_resume)
 
         json_blob_path = f"processed/{resume_id}/resume.json"
         blob_service.upload_file(

@@ -347,7 +347,7 @@ from docx.enum.text import WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-import random
+from app.services.content_standardizer import standardize_resume
 
 # =========================================================
 # LETTERHEAD PATH
@@ -365,19 +365,19 @@ FONT_SIZE = Pt(10.5)
 NAME_SIZE = Pt(14)
 COMPANY_SIZE = Pt(11.5)
 LOCATION_SIZE = Pt(11.5)
-SECTION_HEADER_SIZE = Pt(11)
+SECTION_HEADER_SIZE = Pt(10.5)
 
-PAGE_MARGIN_TOP = Inches(0.5)
-PAGE_MARGIN_BOTTOM = Inches(0.5)
-PAGE_MARGIN_LEFT = Inches(0.7)
-PAGE_MARGIN_RIGHT = Inches(0.7)
+# Guidelines: the text column starts at indent 0 and ends at 7.5".
+# The left page margin keeps that column off the edge of the paper.
+PAGE_MARGIN_LEFT = Inches(0.75)
+CONTENT_WIDTH = Inches(7.5)
 
 # FIXED: Increased spacing for better readability
 SECTION_SPACE_BEFORE = Pt(12)  # Was Pt(10)
 SECTION_SPACE_AFTER = Pt(6)    # Was Pt(4)
 FIRST_SECTION_SPACE_BEFORE = Pt(6)  # Was Pt(4)
 NAME_SPACE_AFTER = Pt(10)      # Was Pt(8)
-BODY_LINE_SPACING = 1.15       # Was 1.0 - slightly more breathing room
+BODY_LINE_SPACING = 1.0
 BULLET_LEFT_INDENT = Inches(0.25)  # Was Inches(0.2)
 BULLET_HANGING_INDENT = Inches(0.2)  # Was Inches(-0.12) - now positive
 JOB_BLOCK_SPACE_BEFORE = Pt(10)  # Was Pt(6)
@@ -407,8 +407,12 @@ def ensure_list(v):
 
 
 def right_tab_position(doc: Document):
+    """Right-align dates and locations at the 7.5\" end of the text column."""
     section = doc.sections[-1]
-    return section.page_width - section.left_margin - section.right_margin
+    content_width = section.page_width - section.left_margin - section.right_margin
+    if content_width and content_width > 0:
+        return content_width
+    return CONTENT_WIDTH
 
 
 def normalize_paragraph_flow(p, keep_with_next=False):
@@ -425,11 +429,14 @@ def normalize_paragraph_flow(p, keep_with_next=False):
 
 
 def apply_page_layout(doc):
+    """Set a left margin and a 7.5\" text column. Keep the letterhead's top margin."""
     for section in doc.sections:
-        section.top_margin = PAGE_MARGIN_TOP
-        section.bottom_margin = PAGE_MARGIN_BOTTOM
         section.left_margin = PAGE_MARGIN_LEFT
-        section.right_margin = PAGE_MARGIN_RIGHT
+        page_width = section.page_width or Inches(8.5)
+        right_margin = page_width - PAGE_MARGIN_LEFT - CONTENT_WIDTH
+        if right_margin < Inches(0.25):
+            right_margin = Inches(0.25)
+        section.right_margin = right_margin
 
 
 def prepare_letterhead_document() -> Document:
@@ -458,8 +465,10 @@ def apply_global_style(doc):
     font.name = FONT_NAME
     font.size = FONT_SIZE
     style.paragraph_format.space_before = Pt(0)
-    style.paragraph_format.space_after = PARAGRAPH_SPACE_AFTER  # FIXED: Was Pt(2)
-    style.paragraph_format.line_spacing = BODY_LINE_SPACING  # FIXED: Now 1.15
+    style.paragraph_format.space_after = PARAGRAPH_SPACE_AFTER
+    style.paragraph_format.line_spacing = BODY_LINE_SPACING
+    style.paragraph_format.left_indent = Inches(0)
+    style.paragraph_format.right_indent = Inches(0)
 
 
 def coerce_length(value) -> Length:
@@ -470,9 +479,9 @@ def coerce_length(value) -> Length:
 
 def apply_spacing(
     p,
-    after: int | Length = None,  # FIXED: Now defaults to None (use paragraph default)
+    after: int | Length = None,
     before: int | Length = 0,
-    line_spacing: float = None,  # FIXED: Now defaults to None (use paragraph default)
+    line_spacing: float = BODY_LINE_SPACING,
 ):
     """
     IMPROVED: More flexible spacing that respects document defaults when not specified.
@@ -582,138 +591,183 @@ def safe_text(v):
     return str(v).strip() if v else ""
 
 
-def _shuffled_competencies(structured_resume: dict) -> list[str]:
-    competencies = [
-        safe_text(item)
-        for item in ensure_list(structured_resume.get("core_competencies"))
-        if safe_text(item)
-    ]
-    random.shuffle(competencies)
-    return competencies
+def _plain_lines(values) -> list[str]:
+    lines = []
+    for value in ensure_list(values):
+        if isinstance(value, dict):
+            text = safe_text(
+                value.get("name")
+                or value.get("title")
+                or value.get("certification")
+                or value.get("credential")
+            )
+        else:
+            text = safe_text(value)
+        if text:
+            lines.append(text)
+    return lines
 
 
-def _certification_text(cert) -> str:
-    if isinstance(cert, dict):
-        return safe_text(
-            cert.get("name")
-            or cert.get("title")
-            or cert.get("certification")
-        )
-    return safe_text(cert)
+def _add_body_line(doc, text: str, *, bold: bool = False):
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run(text)
+    run.bold = bold
+    run.font.name = FONT_NAME
+    run.font.size = FONT_SIZE
+    apply_spacing(paragraph, after=PARAGRAPH_SPACE_AFTER, before=0)
+    normalize_paragraph_flow(paragraph)
+    return paragraph
+
+
+def _render_role_blocks(doc, entries):
+    for index, job in enumerate(entries):
+        if not isinstance(job, dict):
+            text = safe_text(job)
+            if text:
+                add_bullet(doc, text)
+            continue
+
+        company = safe_text(job.get("company") or job.get("organization"))
+        location = safe_text(job.get("location"))
+        role = safe_text(job.get("role") or job.get("title"))
+        dates = safe_text(job.get("dates"))
+
+        if company or location:
+            add_left_right_line(
+                doc,
+                company,
+                location,
+                left_bold=True,
+                left_size=COMPANY_SIZE,
+                right_bold=True,
+                right_size=LOCATION_SIZE,
+                space_before=JOB_BLOCK_SPACE_BEFORE if index > 0 else 0,
+                keep_with_next=True,
+            )
+
+        if role or dates:
+            add_left_right_line(
+                doc,
+                role,
+                dates,
+                left_bold=True,
+                left_italic=True,
+                right_bold=True,
+                right_italic=True,
+                keep_with_next=True,
+            )
+
+        for bullet in ensure_list(job.get("bullets")):
+            if safe_text(bullet):
+                add_bullet(doc, bullet)
+
+
+def _render_bullet_section(doc, title: str, values):
+    lines = _plain_lines(values)
+    if not lines:
+        return
+    add_section_header(doc, title)
+    for line in lines:
+        add_bullet(doc, line)
+
+
+def _render_education(doc, education):
+    rows = []
+    for item in ensure_list(education):
+        if isinstance(item, dict):
+            institution = safe_text(item.get("institution") or item.get("school"))
+            credential = safe_text(
+                item.get("credential") or item.get("degree") or item.get("field")
+            )
+            location = safe_text(item.get("location"))
+            if institution or credential or location:
+                rows.append((institution, location, credential))
+            continue
+        text = safe_text(item)
+        if text:
+            rows.append((text, "", ""))
+
+    if not rows:
+        return
+
+    add_section_header(doc, "Education")
+    for institution, location, credential in rows:
+        if location:
+            add_left_right_line(
+                doc,
+                institution,
+                location,
+                left_bold=True,
+                right_bold=True,
+                right_size=LOCATION_SIZE,
+                keep_with_next=bool(credential),
+            )
+        elif institution:
+            _add_body_line(doc, institution, bold=True)
+        if credential:
+            _add_body_line(doc, credential)
+
+
+def _render_skills(doc, structured_resume: dict):
+    skills = _plain_lines(structured_resume.get("technical_skills"))
+    if not skills:
+        return
+    add_section_header(doc, "Technical Skills")
+    _add_body_line(doc, ", ".join(skills))
 
 
 def render_resume_docx(structured_resume: dict) -> bytes:
-    """
-    IMPROVED: Better spacing throughout, proper flow control, and
-    enhanced readability for professional resumes.
-    """
+    """Render a Syntax Talent resume from structured JSON."""
+    structured_resume = standardize_resume(structured_resume)
     doc = prepare_letterhead_document()
     apply_page_layout(doc)
     apply_global_style(doc)
 
-    # NAME
     name = safe_text(structured_resume.get("name"))
     if not name:
         raise ValueError("Structured resume is missing candidate name")
-    
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run(name.upper())
-    run.bold = True
-    run.font.name = FONT_NAME
-    run.font.size = NAME_SIZE
-    apply_spacing(p, after=NAME_SPACE_AFTER, before=0, line_spacing=1.0)
 
-    # SUMMARY (+ core competencies woven in, no separate section)
-    add_section_header(doc, "Summary of Qualifications", first=True)
-    summary = structured_resume.get("summary")
-    if summary:
-        p = doc.add_paragraph()
-        summary_run = p.add_run(safe_text(summary))
-        summary_run.font.name = FONT_NAME
-        summary_run.font.size = FONT_SIZE
-        # FIXED: Better spacing after summary paragraph
-        apply_spacing(p, after=Pt(8), before=0)
+    name_paragraph = doc.add_paragraph()
+    name_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    name_run = name_paragraph.add_run(name.upper())
+    name_run.bold = True
+    name_run.font.name = FONT_NAME
+    name_run.font.size = NAME_SIZE
+    apply_spacing(name_paragraph, after=NAME_SPACE_AFTER, before=0, line_spacing=1.0)
 
-    for competency in _shuffled_competencies(structured_resume):
-        add_bullet(doc, competency)
+    summary = safe_text(structured_resume.get("summary"))
+    competencies = _plain_lines(structured_resume.get("core_competencies"))
+    if summary or competencies:
+        add_section_header(doc, "Summary of Qualifications", first=True)
+        if summary:
+            _add_body_line(doc, summary)
+        for competency in competencies:
+            add_bullet(doc, competency)
 
-    # PROFESSIONAL EXPERIENCE
-    add_section_header(doc, "Professional Experience")
+    _render_skills(doc, structured_resume)
+
     experience = ensure_list(structured_resume.get("professional_experience"))
+    if experience:
+        add_section_header(doc, "Professional Experience")
+        _render_role_blocks(doc, experience)
 
-    for index, job in enumerate(experience):
-        company = safe_text(job.get("company"))
-        location = safe_text(job.get("location"))
-        role = safe_text(job.get("role"))
-        dates = safe_text(job.get("dates"))
+    _render_education(doc, structured_resume.get("education"))
 
-        # FIXED: Better spacing between job blocks
-        add_left_right_line(
-            doc,
-            company,
-            location,
-            left_bold=True,
-            left_size=COMPANY_SIZE,
-            right_bold=True,
-            right_size=LOCATION_SIZE,
-            space_before=JOB_BLOCK_SPACE_BEFORE if index > 0 else 0,
-            keep_with_next=True,  # NEW: Keep company with role
-        )
+    _render_bullet_section(doc, "Certifications", structured_resume.get("certifications"))
+    _render_bullet_section(
+        doc, "Additional Information", structured_resume.get("additional_information")
+    )
 
-        add_left_right_line(
-            doc,
-            role,
-            dates,
-            left_bold=True,
-            left_italic=True,
-            right_bold=True,
-            right_italic=True,
-            keep_with_next=True,  # NEW: Keep role with bullets
-        )
+    volunteer = ensure_list(structured_resume.get("volunteer_experience"))
+    if volunteer:
+        add_section_header(doc, "Volunteer Experience")
+        _render_role_blocks(doc, volunteer)
 
-        for b in ensure_list(job.get("bullets")):
-            if safe_text(b):
-                add_bullet(doc, b)
+    _render_bullet_section(
+        doc, "Extracurricular Activities", structured_resume.get("extracurricular_activities")
+    )
+    _render_bullet_section(doc, "Bar Licenses", structured_resume.get("bar_licenses"))
 
-    # EDUCATION
-    education = ensure_list(structured_resume.get("education"))
-    if education:
-        add_section_header(doc, "Education")
-        for edu in education:
-            if safe_text(edu):
-                p = doc.add_paragraph()
-                edu_run = p.add_run(safe_text(edu))
-                edu_run.font.name = FONT_NAME
-                edu_run.font.size = FONT_SIZE
-                # FIXED: Better spacing between education entries
-                apply_spacing(p, after=PARAGRAPH_SPACE_AFTER, before=0)
-
-    # CERTIFICATIONS (moved before Technical Skills for better flow)
-    certifications = [
-        text
-        for cert in ensure_list(structured_resume.get("certifications"))
-        if (text := _certification_text(cert))
-    ]
-    if certifications:
-        add_section_header(doc, "Certifications, Licenses & Professional Affiliations")
-        for cert in certifications:
-            add_bullet(doc, cert)
-
-    # TECHNICAL SKILLS
-    skills = ensure_list(structured_resume.get("technical_skills"))
-    clean_skills = [safe_text(s) for s in skills if safe_text(s)]
-
-    if clean_skills:
-        add_section_header(doc, "Technical Skills")
-        p = doc.add_paragraph()
-        skills_run = p.add_run(", ".join(clean_skills))
-        skills_run.font.name = FONT_NAME
-        skills_run.font.size = FONT_SIZE
-        # FIXED: Better spacing for skills section
-        apply_spacing(p, after=Pt(6), before=0)
-
-    # SAVE
     out = BytesIO()
     doc.save(out)
     return out.getvalue()

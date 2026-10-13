@@ -24,7 +24,7 @@ app.openapi_version = "3.0.3"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin] if settings.frontend_origin else [],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
