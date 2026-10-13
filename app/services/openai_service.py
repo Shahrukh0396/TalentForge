@@ -28,50 +28,39 @@ Glossary:
 
 
 FORMATTING RULES:
-- Fix grammar and spelling.
+- Fix grammar, spelling, and punctuation.
+- Capitalize the first word of each bullet. Do not capitalize ordinary words in the middle of a sentence.
+- Bullet points must NOT end with a period. Keep them consistent.
 - Ensure consistent tense:
-  - Current role = present tense
-  - Past roles = past tense
-- Standardize dates to: MM/YYYY – MM/YYYY
-- Do NOT invent experience, companies, dates, or metrics.
+  - Current role (end date is Present) = present tense
+  - Previous roles = past tense
+- Standardize every date range to: MM/YYYY – MM/YYYY
+  Use an en dash. Use "Present" when the role is current.
+  Example: 02/2015 – 05/2020
+- Standardize every location to: City, ST
+  Use the two-letter state abbreviation. Example: Baltimore, MD
+- Standardize software names exactly:
+  QuickBooks, PeopleSoft, PowerPoint, Salesforce, MicroStrategy
+- Do NOT invent experience, companies, dates, degrees, or metrics.
 - Output VALID JSON ONLY.
 - Do NOT include markdown or commentary.
 
 SECTION NORMALIZATION RULES:
 
-The resume may use many different section headings.
-You must normalize them into the following semantic sections ONLY:
+Map source headings into these fields. Do not drop a section because the heading wording differs.
 
-- summary
-- core_competencies
-- professional_experience
-- education
-- technical_skills
-- certifications
+- summary: Profile, Executive Summary, Professional Summary, Overview, Summary of Qualifications
+- core_competencies: Core Competencies, Core Skills, Key Skills, Areas of Expertise, Strengths
+- technical_skills: Skills, Technical Skills, Tools & Technologies, Systems, Platforms
+- professional_experience: Experience, Work Experience, Employment, Professional Experience
+- education: Education, Academic Background
+- certifications: Certifications, Credentials, Professional Certifications. Not bar admissions.
+- additional_information: Additional Information, Interests, Publications, Professional Affiliations, Other
+- volunteer_experience: Volunteer Experience, Community Service, Community Involvement, Pro Bono
+- extracurricular_activities: Extracurricular Activities, Activities, Campus Involvement, Leadership Activities
+- bar_licenses: Bar Licenses, Bar Admissions, Jurisdictions Admitted
 
-If a section heading matches ANY of the following meanings, map it accordingly:
-
-CORE COMPETENCIES:
-Includes sections titled (or similar to):
-Core Competencies, Core Skills, Key Skills, Areas of Expertise,
-Professional Strengths, Capabilities, Expertise, Competencies
-
-SUMMARY:
-Includes Profile, Executive Summary, Professional Summary, Overview
-
-TECHNICAL SKILLS:
-Includes Tools & Technologies, Technical Expertise, Systems, Platforms
-
-CERTIFICATIONS:
-Includes Licenses, Credentials, Professional Certifications
-
-If the resume includes content that belongs to a category but the heading
-uses different wording, still extract it into the correct semantic section.
-
-Do NOT invent sections.
-Do NOT drop content.
-
-But if there are additional sections verify them and then add them.
+Put each source section in exactly one field. Do not leave these sections out.
 
 OUTPUT SCHEMA (MUST MATCH EXACTLY):
 {
@@ -79,6 +68,7 @@ OUTPUT SCHEMA (MUST MATCH EXACTLY):
   "title": "",
   "summary": "",
   "core_competencies": [],
+  "technical_skills": [],
   "professional_experience": [
     {
       "company": "",
@@ -88,9 +78,26 @@ OUTPUT SCHEMA (MUST MATCH EXACTLY):
       "bullets": []
     }
   ],
-  "education": [],
-  "technical_skills": [],
-  "certifications": []
+  "education": [
+    {
+      "institution": "",
+      "location": "City, ST",
+      "credential": ""
+    }
+  ],
+  "certifications": [],
+  "additional_information": [],
+  "volunteer_experience": [
+    {
+      "organization": "",
+      "location": "City, ST",
+      "role": "",
+      "dates": "MM/YYYY – MM/YYYY",
+      "bullets": []
+    }
+  ],
+  "extracurricular_activities": [],
+  "bar_licenses": []
 }
 
 DO not remove professional experience locations.
@@ -139,10 +146,14 @@ def format_resume_with_openai(clean_text: str) -> dict:
         "education",
         "technical_skills",
         "certifications",
+        "additional_information",
+        "volunteer_experience",
+        "extracurricular_activities",
+        "bar_licenses",
     ]
 
     for key in required_keys:
         if key not in data:
-            data[key] = [] if key.endswith("s") else ""
+            data[key] = [] if key not in {"name", "title", "summary"} else ""
 
     return data
