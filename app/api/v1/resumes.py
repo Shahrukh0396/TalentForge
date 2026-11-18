@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Depends, Query
 from uuid import uuid4
 import json
 from pydantic import BaseModel
@@ -12,8 +12,8 @@ from app.models.resume_grant import ResumeGrant
 from app.storage.blob_stub import BlobStorageService
 from app.services.access import (
     grant_owner,
-    grants_for_user,
     list_shares,
+    page_resume_access,
     require_access,
     require_owner,
     revoke_share,
@@ -53,6 +53,13 @@ class ShareOut(BaseModel):
     created_at: datetime
 
 
+class ResumePage(BaseModel):
+    items: List[ResumeHistoryItem]
+    page: int
+    page_size: int
+    total: int
+
+
 def _history(job: ResumeJob, role: str) -> ResumeHistoryItem:
     return ResumeHistoryItem(**job.model_dump(), role=role)
 
@@ -73,17 +80,20 @@ def _visible_job(db: Session, user: dict, resume_id: str) -> tuple[ResumeJob, Re
     return job, grant
 
 
-@router.get("", response_model=List[ResumeHistoryItem])
+@router.get("", response_model=ResumePage)
 def list_resumes(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
     user: dict = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    access, total = page_resume_access(db, user, page, page_size)
     items: list[ResumeHistoryItem] = []
-    for grant in grants_for_user(db, user):
-        job = get_resume_job(grant.resume_id)
+    for resume_id, role in access:
+        job = get_resume_job(resume_id)
         if job:
-            items.append(_history(job, grant.role))
-    return items
+            items.append(_history(job, role))
+    return ResumePage(items=items, page=page, page_size=page_size, total=total)
 
 
 @router.post("", response_model=ResumeHistoryItem, status_code=201)

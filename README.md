@@ -105,6 +105,7 @@ Edit `.env`:
 
 ```env
 APP_NAME=TalentForge Resume Processing API
+APP_VERSION=2.0.0
 API_VERSION=v1
 
 # Azure Blob Storage
@@ -339,6 +340,7 @@ az role assignment create --assignee "$PRINCIPAL_ID" --scope "$ACR_ID" --role Ac
 
 In **Web App → Configuration → Application settings**, add:
 
+- `APP_VERSION=2.0.0` (leave `API_VERSION` unset, or set it to `v1`)
 - `AZURE_BLOB_CONNECTION_STRING`
 - `AZURE_BLOB_CONTAINER`
 - `AZURE_OPENAI_API_KEY`

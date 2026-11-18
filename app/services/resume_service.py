@@ -9,9 +9,11 @@ Central business logic for resume processing.
 - Prepares for OpenAI + DOCX stages
 """
 
+import json
+import logging
+import traceback
 from datetime import datetime
 from typing import Dict
-import json
 from app.models.resume_job import ResumeJob
 from app.services.pdf_service import convert_docx_to_pdf
 from app.storage.blob_stub import BlobStorageService
@@ -22,9 +24,33 @@ from app.services.content_standardizer import standardize_resume
 from app.services.docx_renderer import render_resume_docx
 from app.utils.helpers import resolve_candidate_name
 
+logger = logging.getLogger(__name__)
+
 RESUME_STORE: Dict[str, ResumeJob] = {}
 
 blob_service = BlobStorageService()
+
+
+def processing_error_message(exc: Exception) -> str:
+    """Turn a formatter failure into a sentence the website can show."""
+    if isinstance(exc, KeyError):
+        missing = exc.args[0] if exc.args else "a required field"
+        if missing == "dates":
+            return (
+                "Formatting stopped because a section did not include a date. "
+                "A date is kept when the resume has one, and it is not required on every line. "
+                "Try formatting this resume again."
+            )
+        label = str(missing).replace("_", " ")
+        return f"Formatting stopped because {label} was missing. Try again."
+
+    text = str(exc).strip()
+    if isinstance(exc, ValueError) and text and text != "dates":
+        if "candidate name" in text.lower():
+            return "The candidate's name could not be found. Add the name at the top of the resume and try again."
+        return text
+
+    return "This resume could not be formatted. Check that the file is a readable resume and try again."
 
 
 def _persist_job(job: ResumeJob) -> ResumeJob:
@@ -137,11 +163,14 @@ def process_resume_task(resume_id: str):
         _persist_job(job)
 
     except Exception as e:
+        message = processing_error_message(e)
         job.status = "FAILED"
-        job.error_message = str(e)
+        job.error_message = message
         job.completed_at = datetime.utcnow()
         _persist_job(job)
-        print("PROCESSING ERROR:", str(e))
+        logger.exception("Resume processing failed")
+        traceback.print_exc()
+        print("PROCESSING ERROR:", message)
 
 
 def get_resume_job(resume_id: str) -> ResumeJob | None:

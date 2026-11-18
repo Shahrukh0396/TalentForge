@@ -200,14 +200,65 @@ STATE_NAMES = {
 
 STATE_ABBRS = set(STATE_NAMES.values())
 
+# Named credentials. Ordinary uses of "certified", such as "certified the record", are not included.
+_CERT_STOP_WORDS = {
+    "supporting",
+    "while",
+    "and",
+    "with",
+    "for",
+    "in",
+    "the",
+    "a",
+    "an",
+    "during",
+    "after",
+    "before",
+    "by",
+    "to",
+    "on",
+    "from",
+    "who",
+    "that",
+    "across",
+}
+
+_CERT_MENTIONS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:AWS|Amazon Web Services|Microsoft|Google|Oracle|Cisco|Salesforce|CompTIA)\s+Certified\b"
+        r"(?:\s+[A-Za-z][A-Za-z0-9+/]*){0,6}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bCertified\s+(?:Public Accountant|Management Accountant|Information Systems Auditor|"
+        r"Information Systems Security Professional|Internal Auditor|Fraud Examiner|"
+        r"E-Discovery Specialist|Scrum Master|Ethical Hacker|Project Management Professional)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:PMP|CAPM|CPA|CFA|CMA|CISA|CISSP|CISM|CEH|PHR|SPHR|SHRM-CP|SHRM-SCP)\b"),
+    re.compile(r"\bSix Sigma(?:\s+[A-Za-z]+){0,3}\s+Belt\b", re.IGNORECASE),
+)
+
 LIST_FIELDS = (
     "core_competencies",
     "professional_experience",
+    "key_accomplishments",
+    "career_highlights",
     "education",
     "technical_skills",
     "certifications",
+    "awards",
     "additional_information",
     "volunteer_experience",
+    "extracurricular_activities",
+    "bar_licenses",
+)
+
+DETAIL_FIELDS = (
+    "key_accomplishments",
+    "career_highlights",
+    "awards",
+    "certifications",
     "extracurricular_activities",
     "bar_licenses",
 )
@@ -358,6 +409,16 @@ def _clean_bullet(bullet: str, current: bool | None) -> str:
     return _strip_trailing_period(text)
 
 
+def _as_items(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (str, dict)):
+        return [value]
+    return []
+
+
 def _string_list(value) -> list[str]:
     if value is None:
         return []
@@ -398,7 +459,7 @@ def _clean_job(job, *, org_keys: tuple[str, ...]) -> dict | None:
         if organization:
             break
     role = apply_language_fixes(_text(job.get("role") or job.get("title")))
-    location = normalize_location(apply_language_fixes(_text(job.get("location"))))
+    location = normalize_location(apply_language_fixes(_raw_location(job)))
     bullets = [
         cleaned
         for item in (job.get("bullets") or [])
@@ -415,6 +476,208 @@ def _clean_job(job, *, org_keys: tuple[str, ...]) -> dict | None:
     }
 
 
+def _line_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _raw_location(item: dict) -> str:
+    location = _text(item.get("location"))
+    if location:
+        return location
+    return ", ".join(
+        part
+        for part in (
+            _text(item.get("city")),
+            _text(item.get("state")),
+            _text(item.get("country")),
+        )
+        if part
+    )
+
+
+def _raw_dates(item: dict) -> str:
+    explicit = _text(
+        item.get("dates")
+        or item.get("date")
+        or item.get("graduation_date")
+        or item.get("year")
+    )
+    start = _text(item.get("start_date"))
+    end = _text(item.get("end_date"))
+    ranged = " – ".join(part for part in (start, end) if part)
+    if not explicit:
+        return ranged
+    if not ranged:
+        return explicit
+    explicit_key = _line_key(normalize_dates(explicit))
+    ranged_key = _line_key(normalize_dates(ranged))
+    if not explicit_key or explicit_key == ranged_key or explicit_key in ranged_key or ranged_key in explicit_key:
+        return explicit if len(explicit_key) >= len(ranged_key) else ranged
+    return f"{explicit} · {ranged}"
+
+
+def _clean_detail(item, *, as_bullet: bool = False) -> dict | None:
+    """Keep a non-job entry, including a date and location that are not part of a role."""
+    if isinstance(item, str):
+        text = _clean_bullet(item, None) if as_bullet else apply_language_fixes(item)
+        return {"name": text} if text else None
+    if not isinstance(item, dict):
+        return None
+
+    name = apply_language_fixes(
+        _text(
+            item.get("name")
+            or item.get("title")
+            or item.get("certification")
+            or item.get("credential")
+            or item.get("role")
+        )
+    )
+    if as_bullet and name:
+        name = _clean_bullet(name, None)
+    issuer = apply_language_fixes(_text(item.get("issuer") or item.get("organization")))
+    dates = normalize_dates(apply_language_fixes(_raw_dates(item)))
+    location = normalize_location(apply_language_fixes(_raw_location(item)))
+    normalized_name = normalize_location(name) if name else ""
+    if location and name and _line_key(location) in {_line_key(name), _line_key(normalized_name)}:
+        location = ""
+    bullets = [
+        cleaned
+        for raw in (item.get("bullets") or [])
+        if (cleaned := _clean_bullet(_text(raw), is_current_role(dates)))
+    ]
+    if not any([name, issuer, dates, location, bullets]):
+        return None
+
+    detail = {"name": name}
+    if issuer:
+        detail["issuer"] = issuer
+    if dates:
+        detail["dates"] = dates
+    if location:
+        detail["location"] = location
+    if bullets:
+        detail["bullets"] = bullets
+    return detail
+
+
+def _detail_full_key(item: dict) -> str:
+    return _line_key(
+        " ".join(
+            part
+            for part in (
+                item.get("name", ""),
+                item.get("issuer", ""),
+                item.get("dates", ""),
+                item.get("location", ""),
+                " ".join(item.get("bullets") or []),
+            )
+            if part
+        )
+    )
+
+
+def _text_blobs(value) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        blobs: list[str] = []
+        for item in value:
+            blobs.extend(_text_blobs(item))
+        return blobs
+    if isinstance(value, dict):
+        blobs = []
+        for key in ("name", "title", "role", "description", "summary"):
+            blobs.extend(_text_blobs(value.get(key)))
+        blobs.extend(_text_blobs(value.get("bullets")))
+        return blobs
+    return []
+
+
+def _display_certification(name: str) -> str:
+    tokens = []
+    for token in re.sub(r"\s+", " ", name).strip(" -").split(" "):
+        word = token.strip(",.;:").lower()
+        if tokens and word in _CERT_STOP_WORDS:
+            break
+        if tokens and token[:1].islower() and word not in {"of"}:
+            break
+        tokens.append(token.strip(",.;:"))
+    compact = " ".join(tokens).strip(" -")
+    if re.fullmatch(r"[A-Za-z]{2,6}(?:-[A-Za-z]{2,4})?", compact):
+        return compact.upper()
+    return compact
+
+
+def _mentioned_certifications(data: dict) -> list[dict]:
+    """Find credentials named outside a certifications heading."""
+    sources = [
+        data.get("summary"),
+        data.get("title"),
+        data.get("technical_skills"),
+        data.get("core_competencies"),
+        data.get("professional_experience"),
+        data.get("volunteer_experience"),
+        data.get("key_accomplishments"),
+        data.get("career_highlights"),
+        data.get("awards"),
+        data.get("additional_information"),
+        data.get("extracurricular_activities"),
+    ]
+    found: list[dict] = []
+    seen: set[str] = set()
+    for blob in (text for source in sources for text in _text_blobs(source)):
+        for pattern in _CERT_MENTIONS:
+            for match in pattern.finditer(blob):
+                name = _display_certification(blob[match.start():match.end()])
+                key = _line_key(name)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                found.append({"name": name})
+    return found
+
+
+def _add_mentioned_certifications(data: dict) -> None:
+    existing = {
+        _line_key(item.get("name", ""))
+        for item in data.get("certifications") or []
+        if isinstance(item, dict)
+    }
+    existing.discard("")
+    for cert in _mentioned_certifications(data):
+        key = _line_key(cert["name"])
+        if any(key == prior or key in prior or prior in key for prior in existing):
+            continue
+        data["certifications"].append(cert)
+        existing.add(key)
+
+
+def _dedupe_details(items: list[dict], claimed: set[str]) -> list[dict]:
+    """Drop an entry already printed under a job or an earlier section."""
+    kept = []
+    for item in items:
+        full_key = _detail_full_key(item)
+        name_key = _line_key(item.get("name", ""))
+        has_context = bool(
+            item.get("dates") or item.get("location") or item.get("issuer") or item.get("bullets")
+        )
+        if not full_key or full_key in claimed:
+            continue
+        if name_key and name_key in claimed and not has_context:
+            continue
+        claimed.add(full_key)
+        if name_key:
+            claimed.add(name_key)
+        for bullet in item.get("bullets") or []:
+            bullet_key = _line_key(bullet)
+            if bullet_key:
+                claimed.add(bullet_key)
+        kept.append(item)
+    return kept
+
+
 def _clean_education(item) -> dict | str | None:
     if isinstance(item, str):
         text = apply_language_fixes(item)
@@ -424,17 +687,24 @@ def _clean_education(item) -> dict | str | None:
     institution = apply_language_fixes(
         _text(item.get("institution") or item.get("school") or item.get("name"))
     )
-    credential = apply_language_fixes(
-        _text(item.get("credential") or item.get("degree") or item.get("field"))
-    )
-    location = normalize_location(apply_language_fixes(_text(item.get("location"))))
-    if not any([institution, credential, location]):
+    degree = apply_language_fixes(_text(item.get("credential") or item.get("degree")))
+    field = apply_language_fixes(_text(item.get("field")))
+    if degree and field and _line_key(field) not in _line_key(degree):
+        credential = f"{degree}, {field}"
+    else:
+        credential = degree or field
+    location = normalize_location(apply_language_fixes(_raw_location(item)))
+    dates = normalize_dates(apply_language_fixes(_raw_dates(item)))
+    if not any([institution, credential, location, dates]):
         return None
-    return {
+    education = {
         "institution": institution,
         "credential": credential,
         "location": location,
     }
+    if dates:
+        education["dates"] = dates
+    return education
 
 
 def standardize_resume(structured_resume: dict) -> dict:
@@ -448,37 +718,88 @@ def standardize_resume(structured_resume: dict) -> dict:
         for item in _string_list(data.get("core_competencies"))
     ]
     data["technical_skills"] = _string_list(data.get("technical_skills"))
-    data["certifications"] = _string_list(data.get("certifications"))
-    data["additional_information"] = [
-        _clean_bullet(item, None) for item in _string_list(data.get("additional_information"))
-    ]
-    data["additional_information"] = [item for item in data["additional_information"] if item]
-    data["extracurricular_activities"] = [
-        _clean_bullet(item, None) for item in _string_list(data.get("extracurricular_activities"))
-    ]
-    data["extracurricular_activities"] = [item for item in data["extracurricular_activities"] if item]
-    data["bar_licenses"] = _string_list(data.get("bar_licenses"))
+    information = []
+    for item in _as_items(data.get("additional_information")):
+        if isinstance(item, dict):
+            cleaned = _clean_detail(item, as_bullet=True)
+            if cleaned:
+                information.append(cleaned)
+            continue
+        text = _clean_bullet(_text(item), None)
+        if text:
+            information.append(text)
+    data["additional_information"] = information
+    for field in DETAIL_FIELDS:
+        as_bullet = field in {"key_accomplishments", "career_highlights", "extracurricular_activities"}
+        details = []
+        for item in _as_items(data.get(field)):
+            cleaned = _clean_detail(item, as_bullet=as_bullet)
+            if cleaned:
+                details.append(cleaned)
+        data[field] = details
 
     experience = []
-    for job in data.get("professional_experience") or []:
+    for job in _as_items(data.get("professional_experience")):
         cleaned = _clean_job(job, org_keys=("company", "organization", "employer"))
         if cleaned:
             experience.append(cleaned)
     data["professional_experience"] = experience
 
     volunteer = []
-    for job in data.get("volunteer_experience") or []:
+    for job in _as_items(data.get("volunteer_experience")):
         cleaned = _clean_job(job, org_keys=("organization", "company", "employer"))
         if cleaned:
             volunteer.append(cleaned)
     data["volunteer_experience"] = volunteer
 
     education = []
-    for item in data.get("education") or []:
+    for item in _as_items(data.get("education")):
         cleaned = _clean_education(item)
         if cleaned:
             education.append(cleaned)
     data["education"] = education
+
+    claimed: set[str] = set()
+    for field in ("professional_experience", "volunteer_experience"):
+        for job in data[field]:
+            local: set[str] = set()
+            bullets = []
+            for bullet in job.get("bullets") or []:
+                key = _line_key(bullet)
+                if not key or key in local:
+                    continue
+                local.add(key)
+                claimed.add(key)
+                bullets.append(bullet)
+            job["bullets"] = bullets
+
+    for field in DETAIL_FIELDS:
+        # A certification named inside a job stays on that job and is also listed
+        # under certifications, so job bullets must not remove it.
+        seen = set() if field == "certifications" else claimed
+        data[field] = _dedupe_details(data[field], seen)
+
+    _add_mentioned_certifications(data)
+    for item in data["certifications"]:
+        name_key = _line_key(item.get("name", ""))
+        full_key = _detail_full_key(item)
+        if name_key:
+            claimed.add(name_key)
+        if full_key:
+            claimed.add(full_key)
+
+    information = []
+    for item in data["additional_information"]:
+        if isinstance(item, dict):
+            kept = _dedupe_details([item], claimed)
+            information.extend(kept)
+            continue
+        key = _line_key(item)
+        if not key or key in claimed:
+            continue
+        claimed.add(key)
+        information.append(item)
+    data["additional_information"] = information
 
     for key in LIST_FIELDS:
         data.setdefault(key, [])

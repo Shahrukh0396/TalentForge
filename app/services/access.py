@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.resume_grant import ResumeGrant
@@ -96,6 +96,58 @@ def require_owner(db: Session, user: dict, resume_id: str) -> ResumeGrant:
     if grant.role != "owner":
         raise _not_found()
     return grant
+
+
+def claim_pending_email_grants(db: Session, user: dict) -> None:
+    email = _email(user)
+    if not email:
+        return
+    updated = (
+        db.query(ResumeGrant)
+        .filter(
+            ResumeGrant.tid == user["tid"],
+            ResumeGrant.email == email,
+            ResumeGrant.oid.is_(None),
+        )
+        .update({ResumeGrant.oid: user["oid"]}, synchronize_session=False)
+    )
+    if updated:
+        db.commit()
+
+
+def page_resume_access(
+    db: Session, user: dict, page: int, page_size: int
+) -> tuple[list[tuple[str, str]], int]:
+    """Return one page of (resume_id, role) plus the total the user can see.
+
+    Newest grant wins the order. Owner wins when the same resume is both owned
+    and shared. Only this page of job records needs to be loaded.
+    """
+    claim_pending_email_grants(db, user)
+    email = _email(user)
+    filters = [ResumeGrant.oid == user["oid"]]
+    if email:
+        filters.append(ResumeGrant.email == email)
+
+    grouped = (
+        db.query(
+            ResumeGrant.resume_id.label("resume_id"),
+            func.max(ResumeGrant.created_at).label("latest"),
+            func.max(case((ResumeGrant.role == "owner", 1), else_=0)).label("is_owner"),
+        )
+        .filter(ResumeGrant.tid == user["tid"], or_(*filters))
+        .group_by(ResumeGrant.resume_id)
+        .subquery()
+    )
+    total = db.query(func.count()).select_from(grouped).scalar() or 0
+    rows = (
+        db.query(grouped.c.resume_id, grouped.c.is_owner)
+        .order_by(grouped.c.latest.desc(), grouped.c.resume_id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return [(row.resume_id, "owner" if row.is_owner else "viewer") for row in rows], int(total)
 
 
 def grants_for_user(db: Session, user: dict) -> list[ResumeGrant]:

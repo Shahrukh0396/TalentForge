@@ -341,7 +341,7 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt, Inches, Length
+from docx.shared import Emu, Pt, Inches, Length
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.text import WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
@@ -367,10 +367,11 @@ COMPANY_SIZE = Pt(11.5)
 LOCATION_SIZE = Pt(11.5)
 SECTION_HEADER_SIZE = Pt(10.5)
 
-# Guidelines: the text column starts at indent 0 and ends at 7.5".
-# The left page margin keeps that column off the edge of the paper.
-PAGE_MARGIN_LEFT = Inches(0.75)
+# A 7.5" column centered on letter paper. Equal side margins keep the
+# column in the middle of the page. Dates still sit at the right end of
+# that column; the paragraphs themselves stay left aligned.
 CONTENT_WIDTH = Inches(7.5)
+MIN_SIDE_MARGIN = Inches(0.5)
 
 # FIXED: Increased spacing for better readability
 SECTION_SPACE_BEFORE = Pt(12)  # Was Pt(10)
@@ -429,14 +430,14 @@ def normalize_paragraph_flow(p, keep_with_next=False):
 
 
 def apply_page_layout(doc):
-    """Set a left margin and a 7.5\" text column. Keep the letterhead's top margin."""
+    """Center a 7.5\" text column. Keep the letterhead's top margin."""
     for section in doc.sections:
-        section.left_margin = PAGE_MARGIN_LEFT
         page_width = section.page_width or Inches(8.5)
-        right_margin = page_width - PAGE_MARGIN_LEFT - CONTENT_WIDTH
-        if right_margin < Inches(0.25):
-            right_margin = Inches(0.25)
-        section.right_margin = right_margin
+        side_margin = Emu(int((int(page_width) - int(CONTENT_WIDTH)) / 2))
+        if side_margin < MIN_SIDE_MARGIN:
+            side_margin = MIN_SIDE_MARGIN
+        section.left_margin = side_margin
+        section.right_margin = side_margin
 
 
 def prepare_letterhead_document() -> Document:
@@ -467,6 +468,7 @@ def apply_global_style(doc):
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = PARAGRAPH_SPACE_AFTER
     style.paragraph_format.line_spacing = BODY_LINE_SPACING
+    style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
     style.paragraph_format.left_indent = Inches(0)
     style.paragraph_format.right_indent = Inches(0)
 
@@ -496,6 +498,7 @@ def apply_spacing(
 
 def add_section_header(doc, title: str, *, first: bool = False):
     p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     pf = p.paragraph_format
     pf.space_before = FIRST_SECTION_SPACE_BEFORE if first else SECTION_SPACE_BEFORE
     pf.space_after = SECTION_SPACE_AFTER
@@ -533,6 +536,7 @@ def add_bullet(doc, text: str):
         return
 
     p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run = p.add_run(f"• {text}")
     run.font.name = FONT_NAME
     run.font.size = FONT_SIZE
@@ -563,6 +567,7 @@ def add_left_right_line(
     keep_with_next: bool = False,  # NEW: Allow keeping with following content
 ):
     p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.tab_stops.add_tab_stop(
         right_tab_position(doc), WD_TAB_ALIGNMENT.RIGHT
     )
@@ -610,6 +615,7 @@ def _plain_lines(values) -> list[str]:
 
 def _add_body_line(doc, text: str, *, bold: bool = False):
     paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run = paragraph.add_run(text)
     run.bold = bold
     run.font.name = FONT_NAME
@@ -662,13 +668,75 @@ def _render_role_blocks(doc, entries):
                 add_bullet(doc, bullet)
 
 
-def _render_bullet_section(doc, title: str, values):
-    lines = _plain_lines(values)
-    if not lines:
+def _render_detail_section(doc, title: str, values):
+    """Render a non-job section, keeping a date and location on the right."""
+    items = ensure_list(values)
+    visible = []
+    for item in items:
+        if isinstance(item, str):
+            text = safe_text(item)
+            if text:
+                visible.append(
+                    {"name": text, "dates": "", "location": "", "issuer": "", "bullets": []}
+                )
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = safe_text(
+            item.get("name")
+            or item.get("title")
+            or item.get("certification")
+            or item.get("credential")
+        )
+        dates = safe_text(item.get("dates") or item.get("date") or item.get("graduation_date"))
+        location = safe_text(item.get("location"))
+        issuer = safe_text(item.get("issuer") or item.get("organization"))
+        bullets = [safe_text(bullet) for bullet in ensure_list(item.get("bullets")) if safe_text(bullet)]
+        if not any([name, dates, location, issuer, bullets]):
+            continue
+        visible.append(
+            {
+                "name": name,
+                "dates": dates,
+                "location": location,
+                "issuer": issuer,
+                "bullets": bullets,
+            }
+        )
+    if not visible:
         return
+
     add_section_header(doc, title)
-    for line in lines:
-        add_bullet(doc, line)
+    for index, item in enumerate(visible):
+        dates = safe_text(item.get("dates"))
+        location = safe_text(item.get("location"))
+        issuer = safe_text(item.get("issuer"))
+        bullets = [safe_text(bullet) for bullet in ensure_list(item.get("bullets")) if safe_text(bullet)]
+        has_meta = bool(dates or location or issuer or bullets)
+        if not has_meta:
+            add_bullet(doc, item.get("name") or "")
+            continue
+        add_left_right_line(
+            doc,
+            safe_text(item.get("name")),
+            dates,
+            left_bold=True,
+            right_bold=True,
+            right_size=LOCATION_SIZE,
+            space_before=JOB_BLOCK_SPACE_BEFORE if index else 0,
+            keep_with_next=bool(issuer or location or bullets),
+        )
+        if issuer or location:
+            add_left_right_line(
+                doc,
+                issuer,
+                location,
+                right_bold=True,
+                right_size=LOCATION_SIZE,
+                keep_with_next=bool(bullets),
+            )
+        for bullet in bullets:
+            add_bullet(doc, bullet)
 
 
 def _render_education(doc, education):
@@ -680,18 +748,19 @@ def _render_education(doc, education):
                 item.get("credential") or item.get("degree") or item.get("field")
             )
             location = safe_text(item.get("location"))
-            if institution or credential or location:
-                rows.append((institution, location, credential))
+            dates = safe_text(item.get("dates") or item.get("graduation_date") or item.get("date"))
+            if institution or credential or location or dates:
+                rows.append((institution, location, credential, dates))
             continue
         text = safe_text(item)
         if text:
-            rows.append((text, "", ""))
+            rows.append((text, "", "", ""))
 
     if not rows:
         return
 
     add_section_header(doc, "Education")
-    for institution, location, credential in rows:
+    for institution, location, credential, dates in rows:
         if location:
             add_left_right_line(
                 doc,
@@ -700,12 +769,18 @@ def _render_education(doc, education):
                 left_bold=True,
                 right_bold=True,
                 right_size=LOCATION_SIZE,
-                keep_with_next=bool(credential),
+                keep_with_next=bool(credential or dates),
             )
         elif institution:
             _add_body_line(doc, institution, bold=True)
-        if credential:
-            _add_body_line(doc, credential)
+        if credential or dates:
+            add_left_right_line(
+                doc,
+                credential,
+                dates,
+                right_bold=True,
+                right_size=LOCATION_SIZE,
+            )
 
 
 def _render_skills(doc, structured_resume: dict):
@@ -751,22 +826,29 @@ def render_resume_docx(structured_resume: dict) -> bytes:
         add_section_header(doc, "Professional Experience")
         _render_role_blocks(doc, experience)
 
-    _render_education(doc, structured_resume.get("education"))
-
-    _render_bullet_section(doc, "Certifications", structured_resume.get("certifications"))
-    _render_bullet_section(
-        doc, "Additional Information", structured_resume.get("additional_information")
+    _render_detail_section(
+        doc, "Key Accomplishments", structured_resume.get("key_accomplishments")
     )
+    _render_detail_section(
+        doc, "Career Highlights", structured_resume.get("career_highlights")
+    )
+
+    _render_education(doc, structured_resume.get("education"))
+    _render_detail_section(doc, "Bar Admissions", structured_resume.get("bar_licenses"))
+    _render_detail_section(doc, "Awards", structured_resume.get("awards"))
+    _render_detail_section(doc, "Certifications", structured_resume.get("certifications"))
 
     volunteer = ensure_list(structured_resume.get("volunteer_experience"))
     if volunteer:
         add_section_header(doc, "Volunteer Experience")
         _render_role_blocks(doc, volunteer)
 
-    _render_bullet_section(
-        doc, "Extracurricular Activities", structured_resume.get("extracurricular_activities")
+    _render_detail_section(
+        doc, "Extracurriculars", structured_resume.get("extracurricular_activities")
     )
-    _render_bullet_section(doc, "Bar Licenses", structured_resume.get("bar_licenses"))
+    _render_detail_section(
+        doc, "Additional Information", structured_resume.get("additional_information")
+    )
 
     out = BytesIO()
     doc.save(out)
